@@ -4,7 +4,6 @@ use crate::{
     utils::hash_message,
 };
 use elliptic_curve::{consts::U32, sec1::ToEncodedPoint};
-use fastrlp::Decodable;
 use generic_array::GenericArray;
 use k256::{
     ecdsa::{
@@ -13,6 +12,7 @@ use k256::{
     },
     PublicKey as K256PublicKey,
 };
+use open_fastrlp::Decodable;
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, fmt, str::FromStr};
 use thiserror::Error;
@@ -66,6 +66,22 @@ impl fmt::Display for Signature {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let sig = <[u8; 65]>::from(self);
         write!(f, "{}", hex::encode(&sig[..]))
+    }
+}
+
+#[cfg(feature = "eip712")]
+impl Signature {
+    /// Recovers the ethereum address which was used to sign a given EIP712
+    /// typed data payload.
+    ///
+    /// Recovery signature data uses 'Electrum' notation, this means the `v`
+    /// value is expected to be either `27` or `28`.
+    pub fn recover_typed_data<T>(&self, payload: T) -> Result<Address, SignatureError>
+    where
+        T: super::transaction::eip712::Eip712,
+    {
+        let encoded = payload.encode_eip712().map_err(|_| SignatureError::RecoveryError)?;
+        self.recover(encoded)
     }
 }
 
@@ -141,19 +157,19 @@ impl Signature {
     }
 
     /// Decodes a signature from RLP bytes, assuming no RLP header
-    pub(crate) fn decode_signature(buf: &mut &[u8]) -> Result<Self, fastrlp::DecodeError> {
+    pub(crate) fn decode_signature(buf: &mut &[u8]) -> Result<Self, open_fastrlp::DecodeError> {
         let v = u64::decode(buf)?;
         Ok(Self { r: U256::decode(buf)?, s: U256::decode(buf)?, v })
     }
 }
 
-impl fastrlp::Decodable for Signature {
-    fn decode(buf: &mut &[u8]) -> Result<Self, fastrlp::DecodeError> {
+impl open_fastrlp::Decodable for Signature {
+    fn decode(buf: &mut &[u8]) -> Result<Self, open_fastrlp::DecodeError> {
         Self::decode_signature(buf)
     }
 }
 
-impl fastrlp::Encodable for Signature {
+impl open_fastrlp::Encodable for Signature {
     fn length(&self) -> usize {
         self.r.length() + self.s.length() + self.v.length()
     }

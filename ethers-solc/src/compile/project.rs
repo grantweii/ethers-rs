@@ -80,11 +80,10 @@
 //! If caching is enabled in the [Project](crate::Project) a cache file will be created upon a
 //! successful solc build. The [cache file](crate::cache::SolFilesCache) stores metadata for all the
 //! files that were provided to solc.
-//! For every file the cache file contains a dedicated [cache
-//! entry](crate::cache::CacheEntry), which represents the state of the file. A solidity file can
-//! contain several contracts, for every contract a separate [artifact](crate::Artifact) is emitted.
-//! Therefor the entry also tracks all artifacts emitted by a file. A solidity file can also be
-//! compiled with several solc versions.
+//! For every file the cache file contains a dedicated [cache entry](crate::cache::CacheEntry),
+//! which represents the state of the file. A solidity file can contain several contracts, for every
+//! contract a separate [artifact](crate::Artifact) is emitted. Therefor the entry also tracks all
+//! artifacts emitted by a file. A solidity file can also be compiled with several solc versions.
 //!
 //! For example in `A(<=0.8.10) imports C(>0.4.0)` and
 //! `B(0.8.11) imports C(>0.4.0)`, both `A` and `B` import `C` but there's no solc version that's
@@ -252,10 +251,12 @@ impl<'a, T: ArtifactOutput> ProjectCompiler<'a, T> {
 /// The main reason is to debug all states individually
 #[derive(Debug)]
 struct PreprocessedState<'a, T: ArtifactOutput> {
-    /// contains all sources to compile
+    /// Contains all the sources to compile.
     sources: FilteredCompilerSources,
-    /// cache that holds [CacheEntry] object if caching is enabled and the project is recompiled
+
+    /// Cache that holds `CacheEntry` objects if caching is enabled and the project is recompiled
     cache: ArtifactsCache<'a, T>,
+
     sparse_output: SparseOutputFilter,
 }
 
@@ -305,10 +306,21 @@ impl<'a, T: ArtifactOutput> CompiledState<'a, T> {
         // write all artifacts via the handler but only if the build succeeded and project wasn't
         // configured with `no_artifacts == true`
         let compiled_artifacts = if project.no_artifacts {
-            project.artifacts_handler().output_to_artifacts(&output.contracts, &output.sources, ctx)
-        } else if output.has_error() {
+            project.artifacts_handler().output_to_artifacts(
+                &output.contracts,
+                &output.sources,
+                ctx,
+                &project.paths,
+            )
+        } else if output.has_error(&project.ignored_error_codes, &project.compiler_severity_filter)
+        {
             trace!("skip writing cache file due to solc errors: {:?}", output.errors);
-            project.artifacts_handler().output_to_artifacts(&output.contracts, &output.sources, ctx)
+            project.artifacts_handler().output_to_artifacts(
+                &output.contracts,
+                &output.sources,
+                ctx,
+                &project.paths,
+            )
         } else {
             trace!(
                 "handling artifact output for {} contracts and {} sources",
@@ -348,14 +360,18 @@ impl<'a, T: ArtifactOutput> ArtifactsState<'a, T> {
     fn write_cache(self) -> Result<ProjectCompileOutput<T>> {
         trace!("write cache");
         let ArtifactsState { output, cache, compiled_artifacts } = self;
-        let ignored_error_codes = cache.project().ignored_error_codes.clone();
-        let skip_write_to_disk = cache.project().no_artifacts || output.has_error();
+        let project = cache.project();
+        let ignored_error_codes = project.ignored_error_codes.clone();
+        let compiler_severity_filter = project.compiler_severity_filter.clone();
+        let skip_write_to_disk = project.no_artifacts ||
+            output.has_error(&ignored_error_codes, &compiler_severity_filter);
         let cached_artifacts = cache.consume(&compiled_artifacts, !skip_write_to_disk)?;
         Ok(ProjectCompileOutput {
             compiler_output: output,
             compiled_artifacts,
             cached_artifacts,
             ignored_error_codes,
+            compiler_severity_filter,
         })
     }
 }

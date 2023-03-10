@@ -43,7 +43,7 @@ pub static RE_THREE_OR_MORE_NEWLINES: Lazy<Regex> = Lazy::new(|| Regex::new("\n{
 
 /// Create a regex that matches any library or contract name inside a file
 pub fn create_contract_or_lib_name_regex(name: &str) -> Regex {
-    Regex::new(&format!(r#"(?:using\s+(?P<n1>{name})\s+|is\s+(?:\w+\s*,\s*)*(?P<n2>{name})(?:\s*,\s*\w+)*|(?:(?P<ignore>(?:function|error|as)\s+|\n[^\n]*(?:"([^"\n]|\\")*|'([^'\n]|\\')*))|\W+)(?P<n3>{name})(?:\.|\(| ))"#, name = name)).unwrap()
+    Regex::new(&format!(r#"(?:using\s+(?P<n1>{name})\s+|is\s+(?:\w+\s*,\s*)*(?P<n2>{name})(?:\s*,\s*\w+)*|(?:(?P<ignore>(?:function|error|as)\s+|\n[^\n]*(?:"([^"\n]|\\")*|'([^'\n]|\\')*))|\W+)(?P<n3>{name})(?:\.|\(| ))"#)).unwrap()
 }
 
 /// Move a range by a specified offset
@@ -285,7 +285,7 @@ pub fn library_fully_qualified_placeholder(name: impl AsRef<str>) -> String {
 pub fn library_hash_placeholder(name: impl AsRef<[u8]>) -> String {
     let hash = library_hash(name);
     let placeholder = hex::encode(hash);
-    format!("${}$", placeholder)
+    format!("${placeholder}$")
 }
 
 /// Returns the library placeholder for the given name
@@ -385,6 +385,26 @@ pub(crate) fn find_fave_or_alt_path(root: impl AsRef<Path>, fave: &str, alt: &st
     p
 }
 
+/// Attempts to find a file with different case that exists next to the `non_existing` file
+pub(crate) fn find_case_sensitive_existing_file(non_existing: &Path) -> Option<PathBuf> {
+    let non_existing_file_name = non_existing.file_name()?;
+    let parent = non_existing.parent()?;
+    WalkDir::new(parent)
+        .max_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .find_map(|e| {
+            let existing_file_name = e.path().file_name()?;
+            if existing_file_name.eq_ignore_ascii_case(non_existing_file_name) &&
+                existing_file_name != non_existing_file_name
+            {
+                return Some(e.path().to_path_buf())
+            }
+            None
+        })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::runtime::{Handle, Runtime};
 
@@ -453,6 +473,7 @@ pub fn create_parent_dir_all(file: impl AsRef<Path>) -> Result<(), SolcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use solang_parser::pt::SourceUnitPart;
     use std::{
         collections::HashSet,
@@ -461,9 +482,59 @@ mod tests {
     use tempdir;
 
     #[test]
+    fn can_find_different_case() {
+        let tmp_dir = tempdir("out").unwrap();
+        let path = tmp_dir.path().join("forge-std");
+        create_dir_all(&path).unwrap();
+        let existing = path.join("Test.sol");
+        let non_existing = path.join("test.sol");
+        std::fs::write(&existing, b"").unwrap();
+
+        #[cfg(target_os = "linux")]
+        assert!(!non_existing.exists());
+
+        let found = find_case_sensitive_existing_file(&non_existing).unwrap();
+        assert_eq!(found, existing);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn can_read_different_case() {
+        let tmp_dir = tempdir("out").unwrap();
+        let path = tmp_dir.path().join("forge-std");
+        create_dir_all(&path).unwrap();
+        let existing = path.join("Test.sol");
+        let non_existing = path.join("test.sol");
+        std::fs::write(
+            existing,
+            r#"
+pragma solidity ^0.8.10;
+contract A {}
+        "#,
+        )
+        .unwrap();
+
+        assert!(!non_existing.exists());
+
+        let found = crate::resolver::Node::read(&non_existing).unwrap_err();
+        matches!(found, SolcError::ResolveCaseSensitiveFileName { .. });
+    }
+
+    #[test]
     fn can_create_parent_dirs_with_ext() {
         let tmp_dir = tempdir("out").unwrap();
         let path = tmp_dir.path().join("IsolationModeMagic.sol/IsolationModeMagic.json");
+        create_parent_dir_all(&path).unwrap();
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn can_create_parent_dirs_versioned() {
+        let tmp_dir = tempdir("out").unwrap();
+        let path = tmp_dir.path().join("IVersioned.sol/IVersioned.0.8.16.json");
+        create_parent_dir_all(&path).unwrap();
+        assert!(path.parent().unwrap().is_dir());
+        let path = tmp_dir.path().join("IVersioned.sol/IVersioned.json");
         create_parent_dir_all(&path).unwrap();
         assert!(path.parent().unwrap().is_dir());
     }

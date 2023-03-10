@@ -186,6 +186,7 @@ pub struct NormalTransaction {
     pub transaction_index: Option<u64>,
     #[serde(with = "genesis_string")]
     pub from: GenesisOption<Address>,
+    #[serde(with = "json_string")]
     pub to: Option<Address>,
     #[serde(deserialize_with = "deserialize_stringified_numeric")]
     pub value: U256,
@@ -354,10 +355,11 @@ pub struct MinedBlock {
 }
 
 /// The pre-defined block parameter for balance API endpoints
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum Tag {
     Earliest,
     Pending,
+    #[default]
     Latest,
 }
 
@@ -368,12 +370,6 @@ impl Display for Tag {
             Tag::Pending => write!(f, "pending"),
             Tag::Latest => write!(f, "latest"),
         }
-    }
-}
-
-impl Default for Tag {
-    fn default() -> Self {
-        Tag::Latest
     }
 }
 
@@ -448,16 +444,16 @@ impl TokenQueryOption {
         let mut params: HashMap<&'static str, String> = list_params.into();
         match self {
             TokenQueryOption::ByAddress(address) => {
-                params.insert("address", format!("{:?}", address));
+                params.insert("address", format!("{address:?}"));
                 params
             }
             TokenQueryOption::ByContract(contract) => {
-                params.insert("contractaddress", format!("{:?}", contract));
+                params.insert("contractaddress", format!("{contract:?}"));
                 params
             }
             TokenQueryOption::ByAddressAndContract(address, contract) => {
-                params.insert("address", format!("{:?}", address));
-                params.insert("contractaddress", format!("{:?}", contract));
+                params.insert("address", format!("{address:?}"));
+                params.insert("contractaddress", format!("{contract:?}"));
                 params
             }
         }
@@ -465,8 +461,9 @@ impl TokenQueryOption {
 }
 
 /// The pre-defined block type for retrieving mined blocks
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum BlockType {
+    #[default]
     CanonicalBlocks,
     Uncles,
 }
@@ -477,12 +474,6 @@ impl Display for BlockType {
             BlockType::CanonicalBlocks => write!(f, "blocks"),
             BlockType::Uncles => write!(f, "uncles"),
         }
-    }
-}
-
-impl Default for BlockType {
-    fn default() -> Self {
-        BlockType::CanonicalBlocks
     }
 }
 
@@ -507,7 +498,7 @@ impl Client {
         tag: Option<Tag>,
     ) -> Result<AccountBalance> {
         let tag_str = tag.unwrap_or_default().to_string();
-        let addr_str = format!("{:?}", address);
+        let addr_str = format!("{address:?}");
         let query = self.create_query(
             "account",
             "balance",
@@ -542,7 +533,7 @@ impl Client {
         tag: Option<Tag>,
     ) -> Result<Vec<AccountBalance>> {
         let tag_str = tag.unwrap_or_default().to_string();
-        let addrs = addresses.iter().map(|x| format!("{:?}", x)).collect::<Vec<String>>().join(",");
+        let addrs = addresses.iter().map(|x| format!("{x:?}")).collect::<Vec<String>>().join(",");
         let query: Query<HashMap<&str, &str>> = self.create_query(
             "account",
             "balancemulti",
@@ -577,7 +568,7 @@ impl Client {
         params: Option<TxListParams>,
     ) -> Result<Vec<NormalTransaction>> {
         let mut tx_params: HashMap<&str, String> = params.unwrap_or_default().into();
-        tx_params.insert("address", format!("{:?}", address));
+        tx_params.insert("address", format!("{address:?}"));
         let query = self.create_query("account", "txlist", tx_params);
         let response: Response<Vec<NormalTransaction>> = self.get_json(&query).await?;
 
@@ -608,10 +599,10 @@ impl Client {
         let mut tx_params: HashMap<&str, String> = params.unwrap_or_default().into();
         match tx_query_option {
             InternalTxQueryOption::ByAddress(address) => {
-                tx_params.insert("address", format!("{:?}", address));
+                tx_params.insert("address", format!("{address:?}"));
             }
             InternalTxQueryOption::ByTransactionHash(tx_hash) => {
-                tx_params.insert("txhash", format!("{:?}", tx_hash));
+                tx_params.insert("txhash", format!("{tx_hash:?}"));
             }
             _ => {}
         }
@@ -730,7 +721,7 @@ impl Client {
         page_and_offset: Option<(u64, u64)>,
     ) -> Result<Vec<MinedBlock>> {
         let mut params = HashMap::new();
-        params.insert("address", format!("{:?}", address));
+        params.insert("address", format!("{address:?}"));
         params.insert("blocktype", block_type.unwrap_or_default().to_string());
         if let Some((page, offset)) = page_and_offset {
             params.insert("page", page.to_string());
@@ -740,204 +731,5 @@ impl Client {
         let response: Response<Vec<MinedBlock>> = self.get_json(&query).await?;
 
         Ok(response.result)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use serial_test::serial;
-
-    use crate::{tests::run_at_least_duration, Chain};
-
-    use super::*;
-
-    #[tokio::test]
-    #[serial]
-    async fn get_ether_balance_single_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let balance = client
-                .get_ether_balance_single(
-                    &"0x58eB28A67731c570Ef827C365c89B5751F9E6b0a".parse().unwrap(),
-                    None,
-                )
-                .await;
-            balance.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_ether_balance_multi_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let balances = client
-                .get_ether_balance_multi(
-                    &[&"0x58eB28A67731c570Ef827C365c89B5751F9E6b0a".parse().unwrap()],
-                    None,
-                )
-                .await;
-            assert!(balances.is_ok());
-            let balances = balances.unwrap();
-            assert_eq!(balances.len(), 1);
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_transactions_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_transactions(
-                    &"0x58eB28A67731c570Ef827C365c89B5751F9E6b0a".parse().unwrap(),
-                    None,
-                )
-                .await;
-            txs.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_internal_transactions_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_internal_transactions(
-                    InternalTxQueryOption::ByAddress(
-                        "0x2c1ba59d6f58433fb1eaee7d20b26ed83bda51a3".parse().unwrap(),
-                    ),
-                    None,
-                )
-                .await;
-            txs.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_internal_transactions_by_tx_hash_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_internal_transactions(
-                    InternalTxQueryOption::ByTransactionHash(
-                        "0x40eb908387324f2b575b4879cd9d7188f69c8fc9d87c901b9e2daaea4b442170"
-                            .parse()
-                            .unwrap(),
-                    ),
-                    None,
-                )
-                .await;
-            txs.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_erc20_transfer_events_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_erc20_token_transfer_events(
-                    TokenQueryOption::ByAddress(
-                        "0x4e83362442b8d1bec281594cea3050c8eb01311c".parse().unwrap(),
-                    ),
-                    None,
-                )
-                .await
-                .unwrap();
-            let tx = txs.get(0).unwrap();
-            assert_eq!(tx.gas_used, 93657u64.into());
-            assert_eq!(tx.nonce, 10u64.into());
-            assert_eq!(tx.block_number, 2228258u64.into());
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_erc721_transfer_events_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_erc721_token_transfer_events(
-                    TokenQueryOption::ByAddressAndContract(
-                        "0x6975be450864c02b4613023c2152ee0743572325".parse().unwrap(),
-                        "0x06012c8cf97bead5deae237070f9587f8e7a266d".parse().unwrap(),
-                    ),
-                    None,
-                )
-                .await;
-            txs.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_erc1155_transfer_events_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let txs = client
-                .get_erc1155_token_transfer_events(
-                    TokenQueryOption::ByAddressAndContract(
-                        "0x216CD350a4044e7016f14936663e2880Dd2A39d7".parse().unwrap(),
-                        "0x495f947276749ce646f68ac8c248420045cb7b5e".parse().unwrap(),
-                    ),
-                    None,
-                )
-                .await;
-            txs.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_mined_blocks_success() {
-        run_at_least_duration(Duration::from_millis(250), async {
-            let client = Client::new_from_env(Chain::Mainnet).unwrap();
-
-            let blocks = client
-                .get_mined_blocks(
-                    &"0x9dd134d14d1e65f84b706d6f205cd5b1cd03a46b".parse().unwrap(),
-                    None,
-                    None,
-                )
-                .await;
-            blocks.unwrap();
-        })
-        .await
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn get_avalanche_transactions() {
-        if std::env::var("SNOWTRACE_API_KEY").is_err() {
-            // nothing to do if api key unset
-            return
-        }
-        let client = Client::new_from_env(Chain::Avalanche).unwrap();
-        let txs = client
-            .get_transactions(&"0x1549ea9b546ba9ffb306d78a1e1f304760cc4abf".parse().unwrap(), None)
-            .await;
-        txs.unwrap();
     }
 }

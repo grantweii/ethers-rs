@@ -256,7 +256,7 @@ impl FromStr for ContractOutputSelection {
             s => EvmOutputSelection::from_str(s)
                 .map(ContractOutputSelection::Evm)
                 .or_else(|_| EwasmOutputSelection::from_str(s).map(ContractOutputSelection::Ewasm))
-                .map_err(|_| format!("Invalid contract output selection: {}", s)),
+                .map_err(|_| format!("Invalid contract output selection: {s}")),
         }
     }
 }
@@ -347,7 +347,7 @@ impl FromStr for EvmOutputSelection {
                     DeployedBytecodeOutputSelection::from_str(s)
                         .map(EvmOutputSelection::DeployedByteCode)
                 })
-                .map_err(|_| format!("Invalid evm selection: {}", s)),
+                .map_err(|_| format!("Invalid evm selection: {s}")),
         }
     }
 }
@@ -407,12 +407,12 @@ impl FromStr for BytecodeOutputSelection {
         match s {
             "evm.bytecode" => Ok(BytecodeOutputSelection::All),
             "evm.bytecode.functionDebugData" => Ok(BytecodeOutputSelection::FunctionDebugData),
-            "evm.bytecode.object" => Ok(BytecodeOutputSelection::Object),
+            "code" | "bin" | "evm.bytecode.object" => Ok(BytecodeOutputSelection::Object),
             "evm.bytecode.opcodes" => Ok(BytecodeOutputSelection::Opcodes),
             "evm.bytecode.sourceMap" => Ok(BytecodeOutputSelection::SourceMap),
             "evm.bytecode.linkReferences" => Ok(BytecodeOutputSelection::LinkReferences),
             "evm.bytecode.generatedSources" => Ok(BytecodeOutputSelection::GeneratedSources),
-            s => Err(format!("Invalid bytecode selection: {}", s)),
+            s => Err(format!("Invalid bytecode selection: {s}")),
         }
     }
 }
@@ -482,6 +482,10 @@ impl FromStr for DeployedBytecodeOutputSelection {
             "evm.deployedBytecode.functionDebugData" => {
                 Ok(DeployedBytecodeOutputSelection::FunctionDebugData)
             }
+            "deployed-code" |
+            "deployed-bin" |
+            "runtime-code" |
+            "runtime-bin" |
             "evm.deployedBytecode.object" => Ok(DeployedBytecodeOutputSelection::Object),
             "evm.deployedBytecode.opcodes" => Ok(DeployedBytecodeOutputSelection::Opcodes),
             "evm.deployedBytecode.sourceMap" => Ok(DeployedBytecodeOutputSelection::SourceMap),
@@ -494,7 +498,7 @@ impl FromStr for DeployedBytecodeOutputSelection {
             "evm.deployedBytecode.immutableReferences" => {
                 Ok(DeployedBytecodeOutputSelection::ImmutableReferences)
             }
-            s => Err(format!("Invalid deployedBytecode selection: {}", s)),
+            s => Err(format!("Invalid deployedBytecode selection: {s}")),
         }
     }
 }
@@ -543,7 +547,7 @@ impl FromStr for EwasmOutputSelection {
             "ewasm" => Ok(EwasmOutputSelection::All),
             "ewasm.wast" => Ok(EwasmOutputSelection::Wast),
             "ewasm.wasm" => Ok(EwasmOutputSelection::Wasm),
-            s => Err(format!("Invalid ewasm selection: {}", s)),
+            s => Err(format!("Invalid ewasm selection: {s}")),
         }
     }
 }

@@ -59,6 +59,7 @@ use std::{
 mod parse;
 mod tree;
 
+use crate::utils::find_case_sensitive_existing_file;
 pub use parse::SolImportAlias;
 pub use tree::{print, Charset, TreeOptions};
 
@@ -178,7 +179,9 @@ impl GraphEdges {
     ///
     /// This is a preprocess function that attempts to resolve those libraries that will the
     /// solidity `file` will be required to link. And further restrict this list to libraries
-    /// that won't be inlined See also [SolLibrary](parse::SolLibrary)
+    /// that won't be inlined.
+    ///
+    /// See also `parse::SolLibrary`.
     pub fn get_link_references(&self, file: impl AsRef<Path>) -> HashSet<&PathBuf> {
         let mut link_references = HashSet::new();
         for import in self.all_imported_nodes(self.node_id(file)) {
@@ -371,10 +374,12 @@ impl Graph {
                         add_node(&mut unresolved, &mut index, &mut resolved_imports, import)
                             .map_err(|err| {
                                 match err {
-                                    SolcError::Resolve(err) => {
-                                        // make the error more verbose
+                                    err @ SolcError::ResolveCaseSensitiveFileName { .. } |
+                                    err @ SolcError::Resolve(_) => {
+                                        // make the error more helpful by providing additional
+                                        // context
                                         SolcError::FailedResolveImport(
-                                            err,
+                                            Box::new(err),
                                             node.path.clone(),
                                             import_path.clone(),
                                         )
@@ -452,17 +457,20 @@ impl Graph {
             all_nodes: &mut HashMap<usize, (PathBuf, Source)>,
             sources: &mut Sources,
             edges: &[Vec<usize>],
-            num_input_files: usize,
+            processed_sources: &mut HashSet<usize>,
         ) {
+            // iterate over all dependencies not processed yet
             for dep in edges[idx].iter().copied() {
-                // we only process nodes that were added as part of the resolve step because input
-                // nodes are handled separately
-                if dep >= num_input_files {
-                    // library import
-                    if let Some((path, source)) = all_nodes.remove(&dep) {
-                        sources.insert(path, source);
-                        insert_imports(dep, all_nodes, sources, edges, num_input_files);
-                    }
+                // keep track of processed dependencies, if the dep was already in the set we have
+                // processed it already
+                if !processed_sources.insert(dep) {
+                    continue
+                }
+
+                // library import
+                if let Some((path, source)) = all_nodes.get(&dep).cloned() {
+                    sources.insert(path, source);
+                    insert_imports(dep, all_nodes, sources, edges, processed_sources);
                 }
             }
         }
@@ -477,17 +485,21 @@ impl Graph {
         // determine the `Sources` set for each solc version
         for (version, input_node_indices) in versioned_nodes {
             let mut sources = Sources::new();
+
+            // all input nodes will be processed
+            let mut processed_sources = input_node_indices.iter().copied().collect();
+
             // we only process input nodes (from sources, tests for example)
             for idx in input_node_indices {
                 // insert the input node in the sources set and remove it from the available set
-                let (path, source) = all_nodes.remove(&idx).expect("node is preset. qed");
+                let (path, source) = all_nodes.get(&idx).cloned().expect("node is preset. qed");
                 sources.insert(path, source);
                 insert_imports(
                     idx,
                     &mut all_nodes,
                     &mut sources,
                     &edges.edges,
-                    edges.num_input_files,
+                    &mut processed_sources,
                 );
             }
             versioned_sources.insert(version, sources);
@@ -587,8 +599,7 @@ impl Graph {
                 let mut msg = String::new();
                 self.format_imports_list(idx, &mut msg).unwrap();
                 errors.push(format!(
-                    "Discovered incompatible solidity versions in following\n: {}",
-                    msg
+                    "Discovered incompatible solidity versions in following\n: {msg}"
                 ));
                 erroneous_nodes.insert(idx);
             } else {
@@ -650,7 +661,7 @@ impl Graph {
                 return Vec::new()
             }
 
-            let mut result = sets.pop().cloned().expect("not empty; qed.").clone();
+            let mut result = sets.pop().cloned().expect("not empty; qed.");
             if !sets.is_empty() {
                 result.retain(|item| sets.iter().all(|set| set.contains(item)));
             }
@@ -777,8 +788,7 @@ impl VersionedSources {
             let solc = if !version.is_installed() {
                 if self.offline {
                     return Err(SolcError::msg(format!(
-                        "missing solc \"{}\" installation in offline mode",
-                        version
+                        "missing solc \"{version}\" installation in offline mode"
                     )))
                 } else {
                     // install missing solc
@@ -787,7 +797,7 @@ impl VersionedSources {
             } else {
                 // find installed svm
                 Solc::find_svm_installed_version(version.to_string())?.ok_or_else(|| {
-                    SolcError::msg(format!("solc \"{}\" should have been installed", version))
+                    SolcError::msg(format!("solc \"{version}\" should have been installed"))
                 })?
             };
 
@@ -834,10 +844,21 @@ impl Node {
     pub fn read(file: impl AsRef<Path>) -> Result<Self> {
         let file = file.as_ref();
         let source = Source::read(file).map_err(|err| {
-            if !err.path().exists() && err.path().is_symlink() {
+            let exists = err.path().exists();
+            if !exists && err.path().is_symlink() {
                 SolcError::ResolveBadSymlink(err)
             } else {
-                SolcError::Resolve(err)
+                // This is an additional check useful on OS that have case-sensitive paths, See also <https://docs.soliditylang.org/en/v0.8.17/path-resolution.html#import-callback>
+                if !exists {
+                    // check if there exists a file with different case
+                    if let Some(existing_file) = find_case_sensitive_existing_file(file) {
+                        SolcError::ResolveCaseSensitiveFileName { error: err, existing_file }
+                    } else {
+                        SolcError::Resolve(err)
+                    }
+                } else {
+                    SolcError::Resolve(err)
+                }
             }
         })?;
         let data = SolData::parse(source.as_ref(), file);

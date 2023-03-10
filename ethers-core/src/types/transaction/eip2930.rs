@@ -2,7 +2,7 @@ use super::{eip2718::TypedTransaction, normalize_v};
 use crate::types::{
     Address, Bytes, Signature, SignatureError, Transaction, TransactionRequest, H256, U256, U64,
 };
-use fastrlp::{
+use open_fastrlp::{
     RlpDecodable as FastRlpDecodable, RlpDecodableWrapper as FastRlpDecodableWrapper,
     RlpEncodable as FastRlpEncodable, RlpEncodableWrapper as FastRlpEncodableWrapper,
 };
@@ -95,6 +95,7 @@ pub enum Eip2930RequestError {
 pub struct Eip2930TransactionRequest {
     #[serde(flatten)]
     pub tx: TransactionRequest,
+    #[serde(rename = "accessList")]
     pub access_list: AccessList,
 }
 

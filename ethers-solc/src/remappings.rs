@@ -217,7 +217,7 @@ impl Remapping {
                 if let Some(name) = candidate.window_start.file_name().and_then(|s| s.to_str()) {
                     insert_prioritized(
                         &mut all_remappings,
-                        format!("{}/", name),
+                        format!("{name}/"),
                         candidate.source_dir,
                     );
                 }
@@ -423,7 +423,7 @@ impl Candidate {
     /// Which should be resolved to the top level dir `@openzeppelin`
     ///
     /// We also treat candidates with a `node_modules` parent directory differently and consider
-    /// them to `hardhat` style. In which case the trailing library barrier `contracts` will be
+    /// them to be `hardhat` style. In which case the trailing library barrier `contracts` will be
     /// stripped from the remapping path. This differs from dapptools style which does not include
     /// the library barrier path `src` in the solidity import statements. For example, for
     /// dapptools you could have
@@ -472,8 +472,23 @@ impl Candidate {
         window_start: PathBuf,
         is_inside_node_modules: bool,
     ) {
-        if let Some(pos) =
-            candidates.iter().position(|c| c.source_dir.ends_with(DAPPTOOLS_CONTRACTS_DIR))
+        // if there's only a single source dir candidate then we use this
+        if let Some(pos) = candidates
+            .iter()
+            .enumerate()
+            .fold((0, None), |(mut contracts_dir_count, mut pos), (idx, c)| {
+                if c.source_dir.ends_with(DAPPTOOLS_CONTRACTS_DIR) {
+                    contracts_dir_count += 1;
+                    if contracts_dir_count == 1 {
+                        pos = Some(idx)
+                    } else {
+                        pos = None;
+                    }
+                }
+
+                (contracts_dir_count, pos)
+            })
+            .1
         {
             let c = candidates.remove(pos);
             *candidates = vec![c];
@@ -630,6 +645,7 @@ fn find_remapping_candidates(
             }
         }
     }
+
     // need to find the actual next window in the event `open` is a lib dir
     let window_start = next_nested_window(open, current_dir);
     // finally, we need to merge, adjust candidates from the same level and opening window
@@ -778,7 +794,7 @@ mod tests {
                 touch(&path).unwrap();
             } else {
                 let path = tmp.join(path);
-                std::fs::create_dir_all(&path).unwrap();
+                std::fs::create_dir_all(path).unwrap();
             }
         }
     }
@@ -801,7 +817,7 @@ mod tests {
         assert_eq!(remappings.len(), 1);
 
         assert_eq!(remappings[0].name, "repo1/");
-        assert_eq!(remappings[0].path, format!("{}/src/", path));
+        assert_eq!(remappings[0].path, format!("{path}/src/"));
     }
 
     #[test]
@@ -1015,7 +1031,7 @@ mod tests {
             "node_modules/@openzeppelin/contracts/token/ERC20/IERC20.sol",
         ];
         mkdir_or_touch(tmp_dir.path(), &paths[..]);
-        let remappings = Remapping::find_many(&tmp_dir_node_modules);
+        let remappings = Remapping::find_many(tmp_dir_node_modules);
         let mut paths = ProjectPathsConfig::hardhat(tmp_dir.path()).unwrap();
         paths.remappings = remappings;
 
@@ -1054,7 +1070,7 @@ mod tests {
         mkdir_or_touch(tmp_dir_path, &paths[..]);
 
         let path = tmp_dir_path.display().to_string();
-        let mut remappings = Remapping::find_many(&path);
+        let mut remappings = Remapping::find_many(path);
         remappings.sort_unstable();
 
         let mut expected = vec![
@@ -1115,7 +1131,7 @@ mod tests {
         touch(&contract2).unwrap();
 
         let path = tmp_dir_path.display().to_string();
-        let mut remappings = Remapping::find_many(&path);
+        let mut remappings = Remapping::find_many(path);
         remappings.sort_unstable();
         let mut expected = vec![
             Remapping {
@@ -1151,7 +1167,7 @@ mod tests {
         mkdir_or_touch(tmp_dir_path, &paths[..]);
 
         let path = tmp_dir_path.display().to_string();
-        let mut remappings = Remapping::find_many(&path);
+        let mut remappings = Remapping::find_many(path);
         remappings.sort_unstable();
 
         let mut expected = vec![
@@ -1226,5 +1242,38 @@ mod tests {
         assert_eq!(next_nested_window(a, b),Path::new(
             "/var/folders/l5/lprhf87s6xv8djgd017f0b2h0000gn/T/lib.Z6ODLZJQeJQa/repo1/lib/ds-test"
         ));
+    }
+
+    #[test]
+    fn find_openzeppelin_remapping() {
+        let tmp_dir = tempdir("lib").unwrap();
+        let tmp_dir_path = tmp_dir.path();
+        let paths = [
+            "lib/ds-test/src/test.sol",
+            "lib/forge-std/src/test.sol",
+            "openzeppelin/contracts/interfaces/c.sol",
+        ];
+        mkdir_or_touch(tmp_dir_path, &paths[..]);
+
+        let path = tmp_dir_path.display().to_string();
+        let mut remappings = Remapping::find_many(path);
+        remappings.sort_unstable();
+
+        let mut expected = vec![
+            Remapping {
+                name: "ds-test/".to_string(),
+                path: to_str(tmp_dir_path.join("lib/ds-test/src")),
+            },
+            Remapping {
+                name: "openzeppelin/".to_string(),
+                path: to_str(tmp_dir_path.join("openzeppelin/contracts")),
+            },
+            Remapping {
+                name: "forge-std/".to_string(),
+                path: to_str(tmp_dir_path.join("lib/forge-std/src")),
+            },
+        ];
+        expected.sort_unstable();
+        pretty_assertions::assert_eq!(remappings, expected);
     }
 }

@@ -1,23 +1,14 @@
 use crate::Graph;
 use std::{collections::HashSet, io, io::Write, str::FromStr};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 pub enum Charset {
+    // when operating in a console on windows non-UTF-8 byte sequences are not supported on
+    // stdout, See also [`StdoutLock`]
+    #[cfg_attr(not(target_os = "windows"), default)]
     Utf8,
+    #[cfg_attr(target_os = "windows", default)]
     Ascii,
-}
-
-impl Default for Charset {
-    fn default() -> Self {
-        // when operating in a console on windows non-UTF-8 byte sequences are not supported on
-        // stdout, See also [`StdoutLock`]
-        #[cfg(target_os = "windows")]
-        {
-            Charset::Ascii
-        }
-        #[cfg(not(target_os = "windows"))]
-        Charset::Utf8
-    }
 }
 
 impl FromStr for Charset {
@@ -27,7 +18,7 @@ impl FromStr for Charset {
         match s {
             "utf8" => Ok(Charset::Utf8),
             "ascii" => Ok(Charset::Ascii),
-            s => Err(format!("invalid charset: {}", s)),
+            s => Err(format!("invalid charset: {s}")),
         }
     }
 }
@@ -103,7 +94,7 @@ fn print_node(
     if let Some((last_continues, rest)) = levels_continue.split_last() {
         for continues in rest {
             let c = if *continues { symbols.down } else { " " };
-            write!(out, "{}   ", c)?;
+            write!(out, "{c}   ")?;
         }
 
         let c = if *last_continues { symbols.tee } else { symbols.ell };
@@ -117,7 +108,7 @@ fn print_node(
     let has_deps = graph.has_outgoing_edges(node_index);
     let star = if (new_node && !in_cycle) || !has_deps { "" } else { " (*)" };
 
-    writeln!(out, "{}{}", graph.display_node(node_index), star)?;
+    writeln!(out, "{}{star}", graph.display_node(node_index))?;
 
     if !new_node || in_cycle {
         return Ok(())

@@ -1,9 +1,7 @@
-// Taken from <https://github.com/tomusdrw/rust-web3/blob/master/src/types/block.rs>
+// Modified from <https://github.com/tomusdrw/rust-web3/blob/master/src/types/block.rs>
+
 use crate::types::{Address, Bloom, Bytes, Transaction, TxHash, H256, U256, U64};
 use chrono::{DateTime, TimeZone, Utc};
-#[cfg(not(feature = "celo"))]
-use core::cmp::Ordering;
-
 use serde::{
     de::{MapAccess, Visitor},
     ser::SerializeStruct,
@@ -13,8 +11,9 @@ use std::{fmt, fmt::Formatter, str::FromStr};
 use thiserror::Error;
 
 /// The block type returned from RPC calls.
+///
 /// This is generic over a `TX` type which will be either the hash or the full transaction,
-/// i.e. `Block<TxHash>` or Block<Transaction>`.
+/// i.e. `Block<TxHash>` or `Block<Transaction>`.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Block<TX> {
     /// Hash of the block
@@ -142,6 +141,8 @@ impl<TX> Block<TX> {
     /// Reference: <https://eips.ethereum.org/EIPS/eip-1559>
     #[cfg(not(feature = "celo"))]
     pub fn next_block_base_fee(&self) -> Option<U256> {
+        use core::cmp::Ordering;
+
         let target_usage = self.gas_target();
         let base_fee_per_gas = self.base_fee_per_gas?;
 
@@ -186,7 +187,7 @@ impl<TX> Block<TX> {
         // Casting to i64 is safe because the timestamp is guaranteed to be less than 2^63.
         // TODO: It would be nice if there was `TryInto<i64> for U256`.
         let secs = self.timestamp.as_u64() as i64;
-        Ok(Utc.timestamp(secs, 0))
+        Ok(Utc.timestamp_opt(secs, 0).unwrap())
     }
 }
 
@@ -397,10 +398,10 @@ impl From<Block<Transaction>> for Block<TxHash> {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg(feature = "celo")]
 /// Commit-reveal data for generating randomness in the
 /// [Celo protocol](https://docs.celo.org/celo-codebase/protocol/identity/randomness)
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg(feature = "celo")]
 pub struct Randomness {
     /// The committed randomness for that block
     pub committed: Bytes,
@@ -408,9 +409,9 @@ pub struct Randomness {
     pub revealed: Bytes,
 }
 
+/// SNARK-friendly epoch block signature and bitmap
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg(feature = "celo")]
-/// SNARK-friendly epoch block signature and bitmap
 pub struct EpochSnarkData {
     /// The bitmap showing which validators signed on the epoch block
     pub bitmap: Bytes,
@@ -418,8 +419,8 @@ pub struct EpochSnarkData {
     pub signature: Bytes,
 }
 
+/// A [block hash](H256) or [block number](BlockNumber).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-/// A Block Hash or Block Number
 pub enum BlockId {
     // TODO: May want to expand this to include the requireCanonical field
     // <https://github.com/ethereum/EIPs/blob/master/EIPS/eip-1898.md>
@@ -461,7 +462,7 @@ impl Serialize for BlockId {
         match *self {
             BlockId::Hash(ref x) => {
                 let mut s = serializer.serialize_struct("BlockIdEip1898", 1)?;
-                s.serialize_field("blockHash", &format!("{:?}", x))?;
+                s.serialize_field("blockHash", &format!("{x:?}"))?;
                 s.end()
             }
             BlockId::Number(ref num) => num.serialize(serializer),
@@ -530,11 +531,29 @@ impl<'de> Deserialize<'de> for BlockId {
     }
 }
 
-/// A block Number (or tag - "latest", "earliest", "pending")
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+impl FromStr for BlockId {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("0x") && s.len() == 66 {
+            let hash = s.parse::<H256>().map_err(|e| e.to_string());
+            hash.map(Self::Hash)
+        } else {
+            s.parse().map(Self::Number)
+        }
+    }
+}
+
+/// A block number or tag.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum BlockNumber {
     /// Latest block
+    #[default]
     Latest,
+    /// Finalized block accepted as canonical
+    Finalized,
+    /// Safe head block
+    Safe,
     /// Earliest block (genesis)
     Earliest,
     /// Pending block (not yet part of the blockchain)
@@ -562,6 +581,16 @@ impl BlockNumber {
         matches!(self, BlockNumber::Latest)
     }
 
+    /// Returns `true` if it's "finalized"
+    pub fn is_finalized(&self) -> bool {
+        matches!(self, BlockNumber::Finalized)
+    }
+
+    /// Returns `true` if it's "safe"
+    pub fn is_safe(&self) -> bool {
+        matches!(self, BlockNumber::Safe)
+    }
+
     /// Returns `true` if it's "pending"
     pub fn is_pending(&self) -> bool {
         matches!(self, BlockNumber::Pending)
@@ -585,8 +614,10 @@ impl Serialize for BlockNumber {
         S: Serializer,
     {
         match *self {
-            BlockNumber::Number(ref x) => serializer.serialize_str(&format!("0x{:x}", x)),
+            BlockNumber::Number(ref x) => serializer.serialize_str(&format!("0x{x:x}")),
             BlockNumber::Latest => serializer.serialize_str("latest"),
+            BlockNumber::Finalized => serializer.serialize_str("finalized"),
+            BlockNumber::Safe => serializer.serialize_str("safe"),
             BlockNumber::Earliest => serializer.serialize_str("earliest"),
             BlockNumber::Pending => serializer.serialize_str("pending"),
         }
@@ -607,30 +638,30 @@ impl FromStr for BlockNumber {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let block = match s {
-            "latest" => Self::Latest,
-            "earliest" => Self::Earliest,
-            "pending" => Self::Pending,
-            n => BlockNumber::Number(n.parse::<U64>().map_err(|err| err.to_string())?),
-        };
-        Ok(block)
+        match s {
+            "latest" => Ok(Self::Latest),
+            "finalized" => Ok(Self::Finalized),
+            "safe" => Ok(Self::Safe),
+            "earliest" => Ok(Self::Earliest),
+            "pending" => Ok(Self::Pending),
+            // hex
+            n if n.starts_with("0x") => n.parse().map(Self::Number).map_err(|e| e.to_string()),
+            // decimal
+            n => n.parse::<u64>().map(|n| Self::Number(n.into())).map_err(|e| e.to_string()),
+        }
     }
 }
 
 impl fmt::Display for BlockNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BlockNumber::Number(ref x) => format!("0x{:x}", x).fmt(f),
+            BlockNumber::Number(ref x) => format!("0x{x:x}").fmt(f),
             BlockNumber::Latest => f.write_str("latest"),
+            BlockNumber::Finalized => f.write_str("finalized"),
+            BlockNumber::Safe => f.write_str("safe"),
             BlockNumber::Earliest => f.write_str("earliest"),
             BlockNumber::Pending => f.write_str("pending"),
         }
-    }
-}
-
-impl Default for BlockNumber {
-    fn default() -> Self {
-        BlockNumber::Latest
     }
 }
 
@@ -661,6 +692,18 @@ mod tests {
         assert_eq!(id, BlockId::Number(BlockNumber::Latest));
 
         let num = serde_json::json!(
+            { "blockNumber": "finalized" }
+        );
+        let id = serde_json::from_value::<BlockId>(num).unwrap();
+        assert_eq!(id, BlockId::Number(BlockNumber::Finalized));
+
+        let num = serde_json::json!(
+            { "blockNumber": "safe" }
+        );
+        let id = serde_json::from_value::<BlockId>(num).unwrap();
+        assert_eq!(id, BlockId::Number(BlockNumber::Safe));
+
+        let num = serde_json::json!(
             { "blockNumber": "earliest" }
         );
         let id = serde_json::from_value::<BlockId>(num).unwrap();
@@ -677,6 +720,14 @@ mod tests {
         let num = serde_json::json!("latest");
         let id = serde_json::from_value::<BlockId>(num).unwrap();
         assert_eq!(id, BlockId::Number(BlockNumber::Latest));
+
+        let num = serde_json::json!("finalized");
+        let id = serde_json::from_value::<BlockId>(num).unwrap();
+        assert_eq!(id, BlockId::Number(BlockNumber::Finalized));
+
+        let num = serde_json::json!("safe");
+        let id = serde_json::from_value::<BlockId>(num).unwrap();
+        assert_eq!(id, BlockId::Number(BlockNumber::Safe));
 
         let num = serde_json::json!("earliest");
         let id = serde_json::from_value::<BlockId>(num).unwrap();
@@ -698,7 +749,13 @@ mod tests {
 
     #[test]
     fn serde_block_number() {
-        for b in &[BlockNumber::Latest, BlockNumber::Earliest, BlockNumber::Pending] {
+        for b in &[
+            BlockNumber::Latest,
+            BlockNumber::Finalized,
+            BlockNumber::Safe,
+            BlockNumber::Earliest,
+            BlockNumber::Pending,
+        ] {
             let b_ser = serde_json::to_string(&b).unwrap();
             let b_de: BlockNumber = serde_json::from_str(&b_ser).unwrap();
             assert_eq!(b_de, *b);

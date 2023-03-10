@@ -1,16 +1,19 @@
 //! Generate bindings for multiple `Abigen`
+use crate::{util, Abigen, Context, ContractBindings, ContractFilter, ExpandedContract};
 use eyre::Result;
 use inflector::Inflector;
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
+use toml::Value;
 
-use crate::{util, Abigen, Context, ContractBindings, ContractFilter, ExpandedContract};
+/// The default ethers dependency to generate.
+const DEFAULT_ETHERS_DEP: &str = "ethers = { git = \"https://github.com/gakonst/ethers-rs\", default-features = false, features = [\"abigen\"] }";
 
 /// Collects Abigen structs for a series of contracts, pending generation of
 /// the contract bindings.
@@ -25,6 +28,12 @@ impl std::ops::Deref for MultiAbigen {
 
     fn deref(&self) -> &Self::Target {
         &self.abigens
+    }
+}
+
+impl std::ops::DerefMut for MultiAbigen {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.abigens
     }
 }
 
@@ -99,6 +108,7 @@ impl MultiAbigen {
     ///    let gen = MultiAbigen::from_json_files("./abi").unwrap().with_filter(
     ///        SelectContracts::default().add_name("MyContract").add_name("MyOtherContract"),
     ///    );
+    /// # }
     /// ```
     ///
     /// Exclude all contracts that end with test
@@ -109,6 +119,7 @@ impl MultiAbigen {
     ///    let gen = MultiAbigen::from_json_files("./abi").unwrap().with_filter(
     ///        ExcludeContracts::default().add_pattern(".*Test"),
     ///    );
+    /// # }
     /// ```
     #[must_use]
     pub fn with_filter(mut self, filter: impl Into<ContractFilter>) -> Self {
@@ -128,11 +139,8 @@ impl MultiAbigen {
 
     /// Build the contract bindings and prepare for writing
     pub fn build(self) -> Result<MultiBindings> {
-        let rustfmt = self.abigens.iter().any(|gen| gen.rustfmt);
-        Ok(MultiBindings {
-            expansion: MultiExpansion::from_abigen(self.abigens)?.expand(),
-            rustfmt,
-        })
+        let format = self.abigens.iter().any(|gen| gen.format);
+        Ok(MultiBindings { expansion: MultiExpansion::from_abigen(self.abigens)?.expand(), format })
     }
 }
 
@@ -170,12 +178,12 @@ impl MultiExpansion {
         let mut shared_types = Vec::new();
         // this keeps track of those contracts that need to be updated after a struct was
         // extracted from the contract's module and moved to the shared module
-        let mut dirty_contracts = HashSet::new();
+        let mut dirty_contracts = BTreeSet::new();
 
         // merge all types if more than 1 contract
         if expansions.len() > 1 {
             // check for type conflicts across all contracts
-            let mut conflicts: HashMap<String, Vec<usize>> = HashMap::new();
+            let mut conflicts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
             for (idx, (_, ctx)) in expansions.iter().enumerate() {
                 for type_identifier in ctx.internal_structs().rust_type_names().keys() {
                     conflicts
@@ -209,15 +217,20 @@ impl MultiExpansion {
             }
         }
 
-        MultiExpansionResult { contracts: expansions, dirty_contracts, shared_types }
+        MultiExpansionResult { root: None, contracts: expansions, dirty_contracts, shared_types }
     }
 }
 
 /// Represents an intermediary result of [`MultiExpansion::expand()`]
 pub struct MultiExpansionResult {
+    /// The root dir at which this should be executed.
+    ///
+    /// This is used to check if there's an existing `Cargo.toml`, from which we can derive the
+    /// proper `ethers` dependencies.
+    root: Option<PathBuf>,
     contracts: Vec<(ExpandedContract, Context)>,
     /// contains the indices of contracts with structs that need to be updated
-    dirty_contracts: HashSet<usize>,
+    dirty_contracts: BTreeSet<usize>,
     /// all type definitions of types that are shared by multiple contracts
     shared_types: Vec<TokenStream>,
 }
@@ -249,6 +262,14 @@ impl MultiExpansionResult {
         tokens
     }
 
+    /// Sets the directory from which this type should expand from.
+    ///
+    /// This is used to try to find the proper `ethers` dependency if the `root` is an existing
+    /// workspace. By default, the cwd is assumed to be the `root`.
+    pub fn set_root(&mut self, root: impl Into<PathBuf>) {
+        self.root = Some(root.into());
+    }
+
     /// Sets the path to the shared types module according to the value of `single_file`
     ///
     /// If `single_file` then it's expected that types will be written to `shared_types.rs`
@@ -274,14 +295,14 @@ impl MultiExpansionResult {
     }
 
     /// Converts this result into [`MultiBindingsInner`]
-    fn into_bindings(mut self, single_file: bool, rustfmt: bool) -> MultiBindingsInner {
+    fn into_bindings(mut self, single_file: bool, format: bool) -> MultiBindingsInner {
         self.set_shared_import_path(single_file);
-        let Self { contracts, shared_types, .. } = self;
+        let Self { contracts, shared_types, root, .. } = self;
         let bindings = contracts
             .into_iter()
             .map(|(expanded, ctx)| ContractBindings {
                 tokens: expanded.into_tokens(),
-                rustfmt,
+                format,
                 name: ctx.contract_name().to_string(),
             })
             .map(|v| (v.name.clone(), v))
@@ -301,14 +322,14 @@ impl MultiExpansionResult {
             };
             Some(ContractBindings {
                 tokens: shared_types,
-                rustfmt,
+                format,
                 name: "shared_types".to_string(),
             })
         } else {
             None
         };
 
-        MultiBindingsInner { bindings, shared_types }
+        MultiBindingsInner { root, bindings, shared_types }
     }
 }
 
@@ -340,7 +361,7 @@ impl MultiExpansionResult {
 ///     changed)
 pub struct MultiBindings {
     expansion: MultiExpansionResult,
-    rustfmt: bool,
+    format: bool,
 }
 
 impl MultiBindings {
@@ -354,8 +375,25 @@ impl MultiBindings {
         self.expansion.contracts.is_empty()
     }
 
+    #[must_use]
+    #[deprecated = "Use format instead"]
+    #[doc(hidden)]
+    pub fn rustfmt(mut self, rustfmt: bool) -> Self {
+        self.format = rustfmt;
+        self
+    }
+
+    /// Specify whether to format the code or not. True by default.
+    ///
+    /// This will use [`prettyplease`], so the resulting formatted code **will not** be affected by
+    /// the local `rustfmt` version or config.
+    pub fn format(mut self, format: bool) -> Self {
+        self.format = format;
+        self
+    }
+
     fn into_inner(self, single_file: bool) -> MultiBindingsInner {
-        self.expansion.into_bindings(single_file, self.rustfmt)
+        self.expansion.into_bindings(single_file, self.format)
     }
 
     /// Generates all the bindings and writes them to the given module
@@ -530,6 +568,11 @@ impl MultiBindings {
 }
 
 struct MultiBindingsInner {
+    /// The root dir at which this should be executed.
+    ///
+    /// This is used to check if there's an existing `Cargo.toml`, from which we can derive the
+    /// proper `ethers` dependencies.
+    root: Option<PathBuf>,
     /// Abigen objects to be written
     bindings: BTreeMap<String, ContractBindings>,
     /// contains the content of the shared types if any
@@ -551,6 +594,7 @@ impl MultiBindingsInner {
         &self,
         name: impl AsRef<str>,
         version: impl AsRef<str>,
+        crate_version: String,
     ) -> Result<Vec<u8>> {
         let mut toml = vec![];
 
@@ -562,13 +606,47 @@ impl MultiBindingsInner {
         writeln!(toml, "# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html")?;
         writeln!(toml)?;
         writeln!(toml, "[dependencies]")?;
-        writeln!(
-            toml,
-            r#"
-ethers = {{ git = "https://github.com/gakonst/ethers-rs", default-features = false, features = ["abigen"] }}
-"#
-        )?;
+        writeln!(toml, r#"{crate_version}"#)?;
         Ok(toml)
+    }
+
+    /// Returns the ethers crate version to use.
+    ///
+    /// If we fail to detect a matching `ethers` dependency, this returns the [`DEFAULT_ETHERS_DEP`]
+    /// version.
+    fn crate_version(&self) -> String {
+        self.try_find_crate_version().unwrap_or_else(|_| DEFAULT_ETHERS_DEP.to_string())
+    }
+
+    /// parses the active Cargo.toml to get what version of ethers we are using.
+    ///
+    /// Fails if the existing `Cargo.toml` does not contain a valid ethers dependency
+    fn try_find_crate_version(&self) -> Result<String> {
+        let cargo_toml =
+            if let Some(root) = self.root.clone() { root } else { std::env::current_dir()? }
+                .join("Cargo.toml");
+
+        if !cargo_toml.exists() {
+            return Ok(DEFAULT_ETHERS_DEP.to_string())
+        }
+
+        let data = fs::read_to_string(cargo_toml)?;
+        let toml = data.parse::<Value>()?;
+
+        let ethers = toml
+            .get("dependencies")
+            .and_then(|v| v.get("ethers").or_else(|| v.get("ethers-contract")))
+            .ok_or_else(|| eyre::eyre!("couldn't find ethers or ethers-contract dependency"))?;
+
+        if let Some(rev) = ethers.get("rev") {
+            Ok(format!("ethers = {{ git = \"https://github.com/gakonst/ethers-rs\", rev = {rev}, default-features = false, features = [\"abigen\"] }}"))
+        } else if let Some(version) = ethers.get("version") {
+            Ok(format!(
+                "ethers = {{ version = {version}, default-features = false, features = [\"abigen\"] }}"
+            ))
+        } else {
+            Ok(DEFAULT_ETHERS_DEP.to_string())
+        }
     }
 
     /// Write the contents of `Cargo.toml` to disk
@@ -578,7 +656,8 @@ ethers = {{ git = "https://github.com/gakonst/ethers-rs", default-features = fal
         name: impl AsRef<str>,
         version: impl AsRef<str>,
     ) -> Result<()> {
-        let contents = self.generate_cargo_toml(name, version)?;
+        let crate_version = self.crate_version();
+        let contents = self.generate_cargo_toml(name, version, crate_version)?;
 
         let mut file = fs::OpenOptions::new()
             .read(true)
@@ -598,8 +677,8 @@ ethers = {{ git = "https://github.com/gakonst/ethers-rs", default-features = fal
             mod_names.insert(shared.name.to_snake_case());
         }
 
-        for module in mod_names.into_iter().map(|name| format!("pub mod {};", name)) {
-            writeln!(buf, "{}", module)?;
+        for module in mod_names.into_iter().map(|name| format!("pub mod {name};")) {
+            writeln!(buf, "{module}")?;
         }
 
         Ok(())
@@ -715,7 +794,8 @@ ethers = {{ git = "https://github.com/gakonst/ethers-rs", default-features = fal
 
         if check_cargo_toml {
             // additionally check the contents of the cargo
-            let cargo_contents = self.generate_cargo_toml(name, version)?;
+            let crate_version = self.crate_version();
+            let cargo_contents = self.generate_cargo_toml(name, version, crate_version)?;
             check_file_in_dir(crate_path, "Cargo.toml", &cargo_contents)?;
         }
 
@@ -773,7 +853,7 @@ mod tests {
 
     use crate::{ExcludeContracts, SelectContracts};
     use ethers_solc::project_util::TempProject;
-    use std::{panic, path::PathBuf};
+    use std::{env, panic, path::PathBuf};
 
     struct Context {
         multi_gen: MultiAbigen,
@@ -835,6 +915,18 @@ mod tests {
                 .unwrap()
                 .ensure_consistent_module(mod_root, single_file)
                 .expect("Inconsistent bindings");
+        })
+    }
+
+    #[test]
+    fn can_find_ethers_dep() {
+        run_test(|context| {
+            let Context { multi_gen, mod_root } = context;
+
+            let single_file = true;
+            let mut inner = multi_gen.clone().build().unwrap().into_inner(single_file);
+            inner.root = Some(PathBuf::from("this does not exist"));
+            inner.write_to_module(mod_root, single_file).unwrap();
         })
     }
 
@@ -1235,5 +1327,196 @@ contract Enum {
         assert!(mod_.exists());
         let content = fs::read_to_string(&mod_).unwrap();
         assert!(content.contains("pub mod mod_ {"));
+    }
+
+    #[test]
+    fn parse_ethers_crate() {
+        // gotta bunch these all together as we are overwriting env vars
+        run_test(|context| {
+            let Context { multi_gen, mod_root } = context;
+            let tmp = TempProject::dapptools().unwrap();
+
+            tmp.add_source(
+            "Cargo.toml",
+            r#"
+ [package]
+        name = "ethers-contract"
+        version = "1.0.0"
+        edition = "2021"
+        rust-version = "1.64"
+        authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
+        license = "MIT OR Apache-2.0"
+        description = "Smart contract bindings for the ethers-rs crate"
+        homepage = "https://docs.rs/ethers"
+        repository = "https://github.com/gakonst/ethers-rs"
+        keywords = ["ethereum", "web3", "celo", "ethers"]
+
+        [dependencies]
+        ethers-providers = { version = "^1.0.0", path = "../ethers-providers", default-features = false }
+"#,
+        )
+        .unwrap();
+
+            let _ = tmp.compile().unwrap();
+            env::set_var("CARGO_MANIFEST_DIR", tmp.root());
+            let single_file = false;
+            let name = "a-name";
+            let version = "290.3782.3";
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .write_to_crate(name, version, mod_root, single_file)
+                .unwrap();
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .ensure_consistent_crate(name, version, mod_root, single_file, true)
+                .expect("Inconsistent bindings");
+        });
+
+        run_test(|context| {
+            let Context { multi_gen, mod_root } = context;
+            let tmp = TempProject::dapptools().unwrap();
+
+            tmp.add_source(
+                "Cargo.toml",
+                r#"
+ [package]
+        name = "ethers-contract"
+        version = "1.0.0"
+        edition = "2021"
+        rust-version = "1.64"
+        authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
+        license = "MIT OR Apache-2.0"
+        description = "Smart contract bindings for the ethers-rs crate"
+        homepage = "https://docs.rs/ethers"
+        repository = "https://github.com/gakonst/ethers-rs"
+        keywords = ["ethereum", "web3", "celo", "ethers"]
+
+        [dependencies]
+        ethers-contracts = "0.4.0"
+"#,
+            )
+            .unwrap();
+
+            let _ = tmp.compile().unwrap();
+            env::set_var("CARGO_MANIFEST_DIR", tmp.root());
+
+            let single_file = false;
+            let name = "a-name";
+            let version = "290.3782.3";
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .write_to_crate(name, version, mod_root, single_file)
+                .unwrap();
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .ensure_consistent_crate(name, version, mod_root, single_file, true)
+                .expect("Inconsistent bindings");
+        });
+
+        run_test(|context| {
+            let Context { multi_gen, mod_root } = context;
+            let tmp = TempProject::dapptools().unwrap();
+
+            tmp.add_source(
+            "Cargo.toml",
+            r#"
+    [package]
+        name = "ethers-contract"
+        version = "1.0.0"
+        edition = "2021"
+        rust-version = "1.64"
+        authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
+        license = "MIT OR Apache-2.0"
+        description = "Smart contract bindings for the ethers-rs crate"
+        homepage = "https://docs.rs/ethers"
+        repository = "https://github.com/gakonst/ethers-rs"
+        keywords = ["ethereum", "web3", "celo", "ethers"]
+
+        [dependencies]
+        ethers = {git="https://github.com/gakonst/ethers-rs", rev = "fd8ebf5",features = ["ws", "rustls", "ipc"] }
+"#,
+        )
+        .unwrap();
+
+            let _ = tmp.compile().unwrap();
+            env::set_var("CARGO_MANIFEST_DIR", tmp.root());
+
+            let single_file = false;
+            let name = "a-name";
+            let version = "290.3782.3";
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .write_to_crate(name, version, mod_root, single_file)
+                .unwrap();
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .ensure_consistent_crate(name, version, mod_root, single_file, true)
+                .expect("Inconsistent bindings");
+        });
+
+        run_test(|context| {
+            let Context { multi_gen, mod_root } = context;
+            let tmp = TempProject::dapptools().unwrap();
+
+            tmp.add_source(
+                "Cargo.toml",
+                r#"
+    [package]
+        name = "ethers-contract"
+        version = "1.0.0"
+        edition = "2021"
+        rust-version = "1.64"
+        authors = ["Georgios Konstantopoulos <me@gakonst.com>"]
+        license = "MIT OR Apache-2.0"
+        description = "Smart contract bindings for the ethers-rs crate"
+        homepage = "https://docs.rs/ethers"
+        repository = "https://github.com/gakonst/ethers-rs"
+        keywords = ["ethereum", "web3", "celo", "ethers"]
+
+        [dependencies]
+        ethers = {git="https://github.com/gakonst/ethers-rs" ,features = ["ws", "rustls", "ipc"] }
+"#,
+            )
+            .unwrap();
+
+            let _ = tmp.compile().unwrap();
+            env::set_var("CARGO_MANIFEST_DIR", tmp.root());
+
+            let single_file = false;
+            let name = "a-name";
+            let version = "290.3782.3";
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .write_to_crate(name, version, mod_root, single_file)
+                .unwrap();
+
+            multi_gen
+                .clone()
+                .build()
+                .unwrap()
+                .ensure_consistent_crate(name, version, mod_root, single_file, true)
+                .expect("Inconsistent bindings");
+        });
     }
 }

@@ -24,7 +24,7 @@ macro_rules! log {
 
 abigen!(
     SimpleContract,
-    "./../contract_abi.json",
+    "./abi/contract_abi.json",
     event_derives(serde::Deserialize, serde::Serialize)
 );
 
@@ -66,7 +66,7 @@ pub async fn deploy() {
     let value = contract.get_value().call().await.unwrap();
 
     console::log_2(
-        &format!("Value: `{}`. Logs: ", value).into(),
+        &format!("Value: `{value}`. Logs: ").into(),
         &serde_wasm_bindgen::to_value(&logs).unwrap(),
     );
 }

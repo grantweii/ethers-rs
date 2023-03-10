@@ -1,4 +1,4 @@
-use fastrlp::{Decodable, Encodable};
+use open_fastrlp::{Decodable, Encodable};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     borrow::Borrow,
@@ -16,31 +16,74 @@ pub struct Bytes(
     pub  bytes::Bytes,
 );
 
-fn bytes_to_hex(b: &Bytes) -> String {
-    hex::encode(b.0.as_ref())
+impl FromIterator<u8> for Bytes {
+    fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
+        iter.into_iter().collect::<bytes::Bytes>().into()
+    }
+}
+
+impl<'a> FromIterator<&'a u8> for Bytes {
+    fn from_iter<T: IntoIterator<Item = &'a u8>>(iter: T) -> Self {
+        iter.into_iter().copied().collect::<bytes::Bytes>().into()
+    }
+}
+
+impl Bytes {
+    /// Creates a new empty `Bytes`.
+    ///
+    /// This will not allocate and the returned `Bytes` handle will be empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ethers_core::types::Bytes;
+    ///
+    /// let b = Bytes::new();
+    /// assert_eq!(&b[..], b"");
+    /// ```
+    #[inline]
+    pub const fn new() -> Self {
+        Self(bytes::Bytes::new())
+    }
+
+    /// Creates a new `Bytes` from a static slice.
+    ///
+    /// The returned `Bytes` will point directly to the static slice. There is
+    /// no allocating or copying.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ethers_core::types::Bytes;
+    ///
+    /// let b = Bytes::from_static(b"hello");
+    /// assert_eq!(&b[..], b"hello");
+    /// ```
+    #[inline]
+    pub const fn from_static(bytes: &'static [u8]) -> Self {
+        Self(bytes::Bytes::from_static(bytes))
+    }
+
+    fn hex_encode(&self) -> String {
+        hex::encode(self.0.as_ref())
+    }
 }
 
 impl Debug for Bytes {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "Bytes(0x{})", bytes_to_hex(self))
+        write!(f, "Bytes(0x{})", self.hex_encode())
     }
 }
 
 impl Display for Bytes {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "0x{}", bytes_to_hex(self))
+        write!(f, "0x{}", self.hex_encode())
     }
 }
 
 impl LowerHex for Bytes {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "0x{}", bytes_to_hex(self))
-    }
-}
-
-impl Bytes {
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.as_ref().to_vec()
+        write!(f, "0x{}", self.hex_encode())
     }
 }
 
@@ -147,7 +190,7 @@ impl Encodable for Bytes {
 }
 
 impl Decodable for Bytes {
-    fn decode(buf: &mut &[u8]) -> Result<Self, fastrlp::DecodeError> {
+    fn decode(buf: &mut &[u8]) -> Result<Self, open_fastrlp::DecodeError> {
         Ok(Self(bytes::Bytes::decode(buf)?))
     }
 }
@@ -166,7 +209,7 @@ impl FromStr for Bytes {
             hex::decode(value)
         }
         .map(Into::into)
-        .map_err(|e| ParseBytesError(format!("Invalid hex: {}", e)))
+        .map_err(|e| ParseBytesError(format!("Invalid hex: {e}")))
     }
 }
 
@@ -200,8 +243,8 @@ mod tests {
     fn hex_formatting() {
         let b = Bytes::from(vec![1, 35, 69, 103, 137, 171, 205, 239]);
         let expected = String::from("0x0123456789abcdef");
-        assert_eq!(format!("{:x}", b), expected);
-        assert_eq!(format!("{}", b), expected);
+        assert_eq!(format!("{b:x}"), expected);
+        assert_eq!(format!("{b}"), expected);
     }
 
     #[test]
@@ -219,7 +262,7 @@ mod tests {
     #[test]
     fn test_debug_formatting() {
         let b = Bytes::from(vec![1, 35, 69, 103, 137, 171, 205, 239]);
-        assert_eq!(format!("{:?}", b), "Bytes(0x0123456789abcdef)");
-        assert_eq!(format!("{:#?}", b), "Bytes(0x0123456789abcdef)");
+        assert_eq!(format!("{b:?}"), "Bytes(0x0123456789abcdef)");
+        assert_eq!(format!("{b:#?}"), "Bytes(0x0123456789abcdef)");
     }
 }

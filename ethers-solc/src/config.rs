@@ -76,8 +76,9 @@ impl ProjectPathsConfig {
         }
     }
 
-    /// Same as [Self::paths()] but strips the `root` form all paths,
-    /// [ProjectPaths::strip_prefix_all()]
+    /// Same as [`paths`][ProjectPathsConfig::paths] but strips the `root` form all paths.
+    ///
+    /// See: [`ProjectPaths::strip_prefix_all`]
     pub fn paths_relative(&self) -> ProjectPaths {
         let mut paths = self.paths();
         paths.strip_prefix_all(&self.root);
@@ -230,7 +231,7 @@ impl ProjectPathsConfig {
             // if the import is relative we assume it's already part of the processed input
             // file set
             utils::canonicalize(cwd.join(import)).map_err(|err| {
-                SolcError::msg(format!("failed to resolve relative import \"{:?}\"", err))
+                SolcError::msg(format!("failed to resolve relative import \"{err:?}\""))
             })
         } else {
             // resolve library file
@@ -477,7 +478,7 @@ impl ProjectPathsConfig {
         }
 
         let result = String::from_utf8(content).map_err(|err| {
-            SolcError::msg(format!("failed to convert extended bytes to string: {}", err))
+            SolcError::msg(format!("failed to convert extended bytes to string: {err}"))
         })?;
 
         Ok(result)
@@ -497,7 +498,7 @@ impl fmt::Display for ProjectPathsConfig {
         }
         writeln!(f, "remappings:")?;
         for remapping in &self.remappings {
-            writeln!(f, "    {}", remapping)?;
+            writeln!(f, "    {remapping}")?;
         }
         Ok(())
     }
@@ -588,7 +589,7 @@ impl PathStyle {
                 .artifacts(root.join("out"))
                 .build_infos(root.join("out").join("build-info"))
                 .lib(root.join("lib"))
-                .remappings(Remapping::find_many(&root.join("lib")))
+                .remappings(Remapping::find_many(root.join("lib")))
                 .root(root)
                 .build()?,
             PathStyle::HardHat => ProjectPathsConfig::builder()
@@ -790,7 +791,8 @@ impl SolcConfigBuilder {
     }
 }
 
-/// Container for all `--include-path` arguments for Solc, se also [Solc docs](https://docs.soliditylang.org/en/v0.8.9/using-the-compiler.html#base-path-and-import-remapping
+/// Container for all `--include-path` arguments for Solc, see also
+/// [Solc docs](https://docs.soliditylang.org/en/v0.8.9/using-the-compiler.html#base-path-and-import-remapping).
 ///
 /// The `--include--path` flag:
 /// > Makes an additional source directory available to the default import callback. Use this option
@@ -883,7 +885,7 @@ impl fmt::Display for AllowedLibPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let lib_paths =
             self.paths().map(|path| format!("{}", path.display())).collect::<Vec<_>>().join(",");
-        write!(f, "{}", lib_paths)
+        write!(f, "{lib_paths}")
     }
 }
 
@@ -911,13 +913,13 @@ mod tests {
 
         let root = root.path();
         assert_eq!(ProjectPathsConfig::find_source_dir(root), src,);
-        std::fs::File::create(&contracts).unwrap();
+        std::fs::create_dir_all(&contracts).unwrap();
         assert_eq!(ProjectPathsConfig::find_source_dir(root), contracts,);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).sources,
             utils::canonicalized(contracts),
         );
-        std::fs::File::create(&src).unwrap();
+        std::fs::create_dir_all(&src).unwrap();
         assert_eq!(ProjectPathsConfig::find_source_dir(root), src,);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).sources,
@@ -925,18 +927,19 @@ mod tests {
         );
 
         assert_eq!(ProjectPathsConfig::find_artifacts_dir(root), out,);
-        std::fs::File::create(&artifacts).unwrap();
+        std::fs::create_dir_all(&artifacts).unwrap();
         assert_eq!(ProjectPathsConfig::find_artifacts_dir(root), artifacts,);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).artifacts,
             utils::canonicalized(artifacts),
         );
+        std::fs::create_dir_all(&build_infos).unwrap();
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).build_infos,
             utils::canonicalized(build_infos)
         );
 
-        std::fs::File::create(&out).unwrap();
+        std::fs::create_dir_all(&out).unwrap();
         assert_eq!(ProjectPathsConfig::find_artifacts_dir(root), out,);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).artifacts,
@@ -944,13 +947,13 @@ mod tests {
         );
 
         assert_eq!(ProjectPathsConfig::find_libs(root), vec![lib.clone()],);
-        std::fs::File::create(&node_modules).unwrap();
+        std::fs::create_dir_all(&node_modules).unwrap();
         assert_eq!(ProjectPathsConfig::find_libs(root), vec![node_modules.clone()],);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).libraries,
             vec![utils::canonicalized(node_modules)],
         );
-        std::fs::File::create(&lib).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
         assert_eq!(ProjectPathsConfig::find_libs(root), vec![lib.clone()],);
         assert_eq!(
             ProjectPathsConfig::builder().build_with_root(root).libraries,
